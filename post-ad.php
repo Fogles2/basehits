@@ -1,0 +1,328 @@
+<?php
+session_start();
+require_once 'config/database.php';
+require_once 'classes/Location.php';
+require_once 'classes/ContentModerator.php';
+
+if(!isset($_SESSION['user_id'])) {
+    header('Location: login.php?redirect=post-ad.php');
+    exit();
+}
+
+$database = new Database();
+$db = $database->getConnection();
+$location = new Location($db);
+
+$error_message = '';
+
+// Get categories
+$categories = [];
+try {
+    $query = "SELECT * FROM categories ORDER BY name ASC";
+    $stmt = $db->query($query);
+    $categories = $stmt->fetchAll();
+} catch(PDOException $e) {
+    error_log("Error: " . $e->getMessage());
+}
+
+$states = $location->getAllStates();
+
+// Handle form submission
+if($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $title = trim($_POST['title'] ?? '');
+    $category_id = (int)($_POST['category_id'] ?? 0);
+    $city_id = (int)($_POST['city_id'] ?? 0);
+    $description = trim($_POST['description'] ?? '');
+    $age = isset($_POST['age']) ? (int)$_POST['age'] : null;
+    $contact_method = $_POST['contact_method'] ?? 'message';
+    $contact_info = trim($_POST['contact_info'] ?? '');
+
+    if(empty($title) || !$category_id || !$city_id || empty($description)) {
+        $error_message = 'Please fill in all required fields.';
+    } elseif(strlen($description) < 50) {
+        $error_message = 'Description must be at least 50 characters.';
+    } else {
+        try {
+            $query = "INSERT INTO listings (user_id, title, category_id, city_id, description, age, contact_method, contact_info, status, created_at) 
+                      VALUES (:user_id, :title, :category_id, :city_id, :description, :age, :contact_method, :contact_info, 'active', NOW())";
+
+            $stmt = $db->prepare($query);
+            $stmt->bindParam(':user_id', $_SESSION['user_id']);
+            $stmt->bindParam(':title', $title);
+            $stmt->bindParam(':category_id', $category_id);
+            $stmt->bindParam(':city_id', $city_id);
+            $stmt->bindParam(':description', $description);
+            $stmt->bindParam(':age', $age);
+            $stmt->bindParam(':contact_method', $contact_method);
+            $stmt->bindParam(':contact_info', $contact_info);
+
+            if($stmt->execute()) {
+                $listing_id = $db->lastInsertId();
+                
+                // AI Content Moderation
+                $moderator = new ContentModerator($db);
+                $moderationResult = $moderator->moderateText($title . " " . $description, 'listing', $listing_id, $_SESSION['user_id']);
+                
+                if ($moderationResult['risk_level'] === 'high') {
+                    // Content is flagged, redirect with a notice
+                    header('Location: my-listings.php?flagged=1');
+                } else {
+                    header('Location: listing.php?id=' . $listing_id . '&posted=1');
+                }
+                exit();
+            } else {
+                $error_message = 'Failed to post ad. Please try again.';
+            }
+        } catch(PDOException $e) {
+            error_log("Error posting ad: " . $e->getMessage());
+            $error_message = 'An error occurred. Please try again later.';
+        }
+    }
+}
+
+include 'views/header.php';
+?>
+
+<div class="min-h-screen bg-gh-bg py-6">
+  <div class="mx-auto max-w-3xl px-4">
+
+    <a href="index.php" class="mb-4 inline-flex items-center gap-1 text-xs text-gh-muted transition-colors hover:text-gh-fg">
+      <i class="bi bi-arrow-left"></i>
+      Back to Home
+    </a>
+
+    <div class="mb-6 text-center">
+      <div class="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-gh-accent to-gh-success">
+        <i class="bi bi-plus-circle-fill text-2xl text-white"></i>
+      </div>
+      <h1 class="text-2xl font-bold text-white">Post Your Ad</h1>
+      <p class="mt-1 text-sm text-gh-muted">Free and takes less than 2 minutes</p>
+    </div>
+
+    <?php if($error_message): ?>
+      <div class="mb-4 rounded-lg border border-red-500 bg-red-500/10 p-3">
+        <div class="flex items-center gap-2">
+          <i class="bi bi-exclamation-triangle-fill text-lg text-red-500"></i>
+          <span class="text-sm text-red-500"><?php echo htmlspecialchars($error_message); ?></span>
+        </div>
+      </div>
+    <?php endif; ?>
+
+    <form method="POST" class="space-y-4">
+
+      <!-- Title -->
+      <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+        <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+          <i class="bi bi-type text-gh-accent"></i>
+          Ad Title <span class="text-red-500">*</span>
+        </label>
+        <input type="text" 
+               name="title" 
+               required
+               maxlength="100"
+               value="<?php echo htmlspecialchars($_POST['title'] ?? ''); ?>"
+               placeholder="Looking for fun tonight..."
+               class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg placeholder-gh-muted transition-all focus:border-gh-accent focus:outline-none">
+      </div>
+
+      <!-- Category & Age -->
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+          <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+            <i class="bi bi-tag-fill text-gh-accent"></i>
+            Category <span class="text-red-500">*</span>
+          </label>
+          <select name="category_id" 
+                  required
+                  class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg transition-all focus:border-gh-accent focus:outline-none">
+            <option value="">Select...</option>
+            <?php foreach($categories as $cat): ?>
+              <option value="<?php echo $cat['id']; ?>"><?php echo htmlspecialchars($cat['name']); ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+
+        <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+          <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+            <i class="bi bi-calendar-event text-gh-accent"></i>
+            Your Age
+          </label>
+          <input type="number" 
+                 name="age" 
+                 min="18" 
+                 max="99"
+                 placeholder="18+"
+                 class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg transition-all focus:border-gh-accent focus:outline-none">
+        </div>
+      </div>
+
+      <!-- Location -->
+      <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+        <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+          <i class="bi bi-geo-alt-fill text-gh-accent"></i>
+          Location <span class="text-red-500">*</span>
+        </label>
+
+        <div class="grid gap-3 md:grid-cols-2">
+          <div>
+            <label class="mb-1 block text-xs font-semibold text-gh-muted">State</label>
+            <select name="state" 
+                    id="stateSelect" 
+                    required
+                    class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg transition-all focus:border-gh-accent focus:outline-none">
+              <option value="">Choose state...</option>
+              <?php foreach($states as $state): ?>
+                <option value="<?php echo $state['id']; ?>"><?php echo htmlspecialchars($state['name']); ?></option>
+              <?php endforeach; ?>
+            </select>
+          </div>
+
+          <div>
+            <label class="mb-1 block text-xs font-semibold text-gh-muted">City</label>
+            <select name="city_id" 
+                    id="citySelect" 
+                    required
+                    disabled
+                    class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg transition-all focus:border-gh-accent focus:outline-none disabled:opacity-50">
+              <option value="">Select state first...</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Description -->
+      <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+        <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+          <i class="bi bi-file-text text-gh-accent"></i>
+          Description <span class="text-red-500">*</span>
+        </label>
+        <textarea name="description" 
+                  required
+                  rows="6"
+                  minlength="50"
+                  maxlength="2000"
+                  placeholder="Describe what you're looking for... (min 50 characters)"
+                  class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg placeholder-gh-muted transition-all focus:border-gh-accent focus:outline-none"><?php echo htmlspecialchars($_POST['description'] ?? ''); ?></textarea>
+        <div class="mt-2 flex items-center justify-between text-xs">
+          <span class="text-gh-muted">Min 50 characters</span>
+          <span class="text-gh-muted"><span id="charCount">0</span> / 2000</span>
+        </div>
+      </div>
+
+      <!-- Contact Method -->
+      <div class="rounded-lg border border-gh-border bg-gh-panel p-4">
+        <label class="mb-2 flex items-center gap-2 text-sm font-bold text-white">
+          <i class="bi bi-chat-dots text-gh-accent"></i>
+          Contact Method
+        </label>
+
+        <div class="mb-3 grid gap-2 sm:grid-cols-2">
+          <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gh-border bg-gh-panel2 p-3 transition-all has-[:checked]:border-gh-accent has-[:checked]:bg-gh-accent/10">
+            <input type="radio" name="contact_method" value="message" checked class="h-4 w-4">
+            <div>
+              <div class="text-sm font-semibold text-white">Platform Messages</div>
+              <div class="text-xs text-gh-muted">Via Basehit</div>
+            </div>
+          </label>
+
+          <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-gh-border bg-gh-panel2 p-3 transition-all has-[:checked]:border-gh-accent has-[:checked]:bg-gh-accent/10">
+            <input type="radio" name="contact_method" value="external" class="h-4 w-4">
+            <div>
+              <div class="text-sm font-semibold text-white">External Contact</div>
+              <div class="text-xs text-gh-muted">Email or phone</div>
+            </div>
+          </label>
+        </div>
+
+        <div id="externalContactField" class="hidden">
+          <input type="text" 
+                 name="contact_info" 
+                 placeholder="Email, phone, or other..."
+                 class="w-full rounded-lg border border-gh-border bg-gh-panel2 px-3 py-2 text-sm text-gh-fg transition-all focus:border-gh-accent focus:outline-none">
+        </div>
+      </div>
+
+      <!-- Guidelines -->
+      <div class="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
+        <div class="mb-2 flex items-center gap-2 text-sm font-semibold text-yellow-500">
+          <i class="bi bi-shield-check"></i>
+          Posting Guidelines
+        </div>
+        <ul class="space-y-1 text-xs text-gh-muted">
+          <li class="flex items-start gap-1">
+            <i class="bi bi-check-circle-fill mt-0.5 text-green-500"></i>
+            <span>Be respectful and honest</span>
+          </li>
+          <li class="flex items-start gap-1">
+            <i class="bi bi-check-circle-fill mt-0.5 text-green-500"></i>
+            <span>No illegal activities</span>
+          </li>
+          <li class="flex items-start gap-1">
+            <i class="bi bi-check-circle-fill mt-0.5 text-green-500"></i>
+            <span>Must be 18+ for adult content</span>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Submit -->
+      <button type="submit" 
+              class="group relative w-full overflow-hidden rounded-lg bg-gradient-to-r from-pink-600 to-purple-600 py-3 text-base font-bold text-white transition-all hover:brightness-110">
+        <span class="relative z-10 flex items-center justify-center gap-2">
+          <i class="bi bi-send-fill"></i>
+          Post My Ad Now
+          <i class="bi bi-arrow-right transition-transform group-hover:translate-x-1"></i>
+        </span>
+      </button>
+
+    </form>
+
+  </div>
+</div>
+
+<script>
+const textarea = document.querySelector('textarea[name="description"]');
+const charCount = document.getElementById('charCount');
+
+textarea.addEventListener('input', function() {
+  charCount.textContent = this.value.length;
+  charCount.classList.toggle('text-red-500', this.value.length < 50);
+  charCount.classList.toggle('text-green-500', this.value.length >= 50);
+});
+
+document.getElementById('stateSelect').addEventListener('change', function() {
+  const stateId = this.value;
+  const citySelect = document.getElementById('citySelect');
+
+  if(!stateId) {
+    citySelect.disabled = true;
+    citySelect.innerHTML = '<option value="">Select state first...</option>';
+    return;
+  }
+
+  citySelect.disabled = true;
+  citySelect.innerHTML = '<option value="">Loading...</option>';
+
+  fetch(`get-cities.php?state_id=${stateId}`)
+    .then(response => response.json())
+    .then(cities => {
+      citySelect.innerHTML = '<option value="">Choose city...</option>';
+      cities.forEach(city => {
+        const option = document.createElement('option');
+        option.value = city.id;
+        option.textContent = city.name;
+        citySelect.appendChild(option);
+      });
+      citySelect.disabled = false;
+    });
+});
+
+document.querySelectorAll('input[name="contact_method"]').forEach(radio => {
+  radio.addEventListener('change', function() {
+    const externalField = document.getElementById('externalContactField');
+    externalField.classList.toggle('hidden', this.value !== 'external');
+    externalField.querySelector('input').required = this.value === 'external';
+  });
+});
+</script>
+
+<?php include 'views/footer.php'; ?>

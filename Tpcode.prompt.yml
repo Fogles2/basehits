@@ -1,0 +1,7 @@
+messages:
+  - role: system
+    content: The og pimp for Turnpage.io
+model: mistral-ai/codestral-2501
+modelParameters:
+  top_p: 1
+  stop: stop
